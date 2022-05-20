@@ -16,12 +16,16 @@
 
 package com.alibaba.nacos.config.server.service.capacity;
 
-import com.alibaba.nacos.common.utils.CollectionUtils;
-import com.alibaba.nacos.config.server.model.capacity.TenantCapacity;
-import com.alibaba.nacos.config.server.service.datasource.DataSourceService;
-import com.alibaba.nacos.config.server.service.datasource.DynamicDataSource;
-import com.alibaba.nacos.config.server.utils.PropertyUtil;
-import com.alibaba.nacos.config.server.utils.TimeUtils;
+import static com.alibaba.nacos.config.server.utils.LogUtil.FATAL_LOG;
+
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.util.List;
+
+import javax.annotation.PostConstruct;
+
 import org.springframework.jdbc.CannotGetJdbcConnectionException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.PreparedStatementCreator;
@@ -29,15 +33,12 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.stereotype.Service;
 
-import javax.annotation.PostConstruct;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
-import java.sql.Timestamp;
-import java.util.List;
-
-import static com.alibaba.nacos.config.server.utils.LogUtil.FATAL_LOG;
+import com.alibaba.nacos.common.utils.CollectionUtils;
+import com.alibaba.nacos.config.server.model.capacity.TenantCapacity;
+import com.alibaba.nacos.config.server.service.datasource.DataSourceService;
+import com.alibaba.nacos.config.server.service.datasource.DynamicDataSource;
+import com.alibaba.nacos.config.server.utils.PropertyUtil;
+import com.alibaba.nacos.config.server.utils.TimeUtils;
 
 /**
  * Tenant Capacity Service.
@@ -47,21 +48,21 @@ import static com.alibaba.nacos.config.server.utils.LogUtil.FATAL_LOG;
  */
 @Service
 public class TenantCapacityPersistService {
-    
+
     private static final TenantCapacityRowMapper TENANT_CAPACITY_ROW_MAPPER = new TenantCapacityRowMapper();
-    
+
     private JdbcTemplate jdbcTemplate;
-    
+
     private DataSourceService dataSourceService;
-    
+
     @PostConstruct
     public void init() {
         this.dataSourceService = DynamicDataSource.getInstance().getDataSource();
         this.jdbcTemplate = dataSourceService.getJdbcTemplate();
     }
-    
+
     private static final class TenantCapacityRowMapper implements RowMapper<TenantCapacity> {
-        
+
         @Override
         public TenantCapacity mapRow(ResultSet rs, int rowNum) throws SQLException {
             TenantCapacity tenantCapacity = new TenantCapacity();
@@ -75,7 +76,7 @@ public class TenantCapacityPersistService {
             return tenantCapacity;
         }
     }
-    
+
     public TenantCapacity getTenantCapacity(String tenantId) {
         String sql =
                 "SELECT id, quota, `usage`, `max_size`, max_aggr_count, max_aggr_size, tenant_id FROM tenant_capacity "
@@ -86,7 +87,7 @@ public class TenantCapacityPersistService {
         }
         return list.get(0);
     }
-    
+
     /**
      * Insert TenantCapacity.
      *
@@ -100,7 +101,8 @@ public class TenantCapacityPersistService {
         try {
             GeneratedKeyHolder generatedKeyHolder = new GeneratedKeyHolder();
             PreparedStatementCreator preparedStatementCreator = connection -> {
-                PreparedStatement ps = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS);
+                // 支持pgsql和mysql
+                PreparedStatement ps = connection.prepareStatement(sql, new String[]{"id"});
                 String tenant = tenantCapacity.getTenant();
                 ps.setString(1, tenant);
                 ps.setInt(2, tenantCapacity.getQuota());
@@ -118,9 +120,9 @@ public class TenantCapacityPersistService {
             FATAL_LOG.error("[db-error]", e);
             throw e;
         }
-        
+
     }
-    
+
     /**
      * Increment UsageWithDefaultQuotaLimit.
      *
@@ -140,7 +142,7 @@ public class TenantCapacityPersistService {
             throw e;
         }
     }
-    
+
     /**
      * Increment UsageWithQuotaLimit.
      *
@@ -156,10 +158,10 @@ public class TenantCapacityPersistService {
         } catch (CannotGetJdbcConnectionException e) {
             FATAL_LOG.error("[db-error]", e);
             throw e;
-            
+
         }
     }
-    
+
     /**
      * Increment Usage.
      *
@@ -176,7 +178,7 @@ public class TenantCapacityPersistService {
             throw e;
         }
     }
-    
+
     /**
      * DecrementUsage.
      *
@@ -192,7 +194,7 @@ public class TenantCapacityPersistService {
             throw e;
         }
     }
-    
+
     /**
      * Update TenantCapacity.
      *
@@ -225,7 +227,7 @@ public class TenantCapacityPersistService {
         }
         sql.append(" gmt_modified = ?");
         argList.add(TimeUtils.getCurrentTime());
-        
+
         sql.append(" WHERE tenant_id = ?");
         argList.add(tenant);
         try {
@@ -235,11 +237,11 @@ public class TenantCapacityPersistService {
             throw e;
         }
     }
-    
+
     public boolean updateQuota(String tenant, Integer quota) {
         return updateTenantCapacity(tenant, quota, null, null, null);
     }
-    
+
     /**
      * Correct Usage.
      *
@@ -257,7 +259,7 @@ public class TenantCapacityPersistService {
             throw e;
         }
     }
-    
+
     /**
      * Get TenantCapacity List, only including id and tenantId value.
      *
@@ -267,11 +269,11 @@ public class TenantCapacityPersistService {
      */
     public List<TenantCapacity> getCapacityList4CorrectUsage(long lastId, int pageSize) {
         String sql = "SELECT id, tenant_id FROM tenant_capacity WHERE id>? LIMIT ?";
-        
+
         if (PropertyUtil.isEmbeddedStorage()) {
             sql = "SELECT id, tenant_id FROM tenant_capacity WHERE id>? OFFSET 0 ROWS FETCH NEXT ? ROWS ONLY";
         }
-        
+
         try {
             return jdbcTemplate.query(sql, new Object[] {lastId, pageSize}, new RowMapper<TenantCapacity>() {
                 @Override
@@ -287,7 +289,7 @@ public class TenantCapacityPersistService {
             throw e;
         }
     }
-    
+
     /**
      * Delete TenantCapacity.
      *
